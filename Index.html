@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Linux in Browser</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0d1117;
+      color: #c9d1d9;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 16px;
+    }
+
+    header {
+      width: 100%;
+      max-width: 900px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 0 16px;
+    }
+
+    header h1 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #f0f6fc;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    header h1 span.dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #3fb950;
+      display: inline-block;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .controls {
+      display: flex;
+      gap: 8px;
+    }
+
+    button {
+      padding: 7px 14px;
+      border-radius: 6px;
+      border: 1px solid #30363d;
+      background: #21262d;
+      color: #c9d1d9;
+      font-size: 0.82rem;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    button:hover { background: #30363d; border-color: #8b949e; }
+
+    button.primary {
+      background: #238636;
+      border-color: #2ea043;
+      color: #fff;
+    }
+    button.primary:hover { background: #2ea043; }
+    button.primary:disabled { background: #21262d; border-color: #30363d; color: #8b949e; cursor: not-allowed; }
+
+    #screen-container {
+      width: 100%;
+      max-width: 900px;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #000;
+      position: relative;
+    }
+
+    #screen-container canvas {
+      display: block;
+      width: 100% !important;
+      height: auto !important;
+      image-rendering: pixelated;
+    }
+
+    #loading-overlay {
+      position: absolute;
+      inset: 0;
+      background: #0d1117;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      z-index: 10;
+    }
+
+    #loading-overlay.hidden { display: none; }
+
+    .spinner {
+      width: 36px;
+      height: 36px;
+      border: 3px solid #30363d;
+      border-top-color: #3fb950;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #loading-status {
+      font-size: 0.85rem;
+      color: #8b949e;
+    }
+
+    #progress-bar-wrap {
+      width: 260px;
+      height: 4px;
+      background: #21262d;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    #progress-bar {
+      height: 100%;
+      background: #3fb950;
+      width: 0%;
+      transition: width 0.3s;
+    }
+
+    footer {
+      margin-top: 12px;
+      font-size: 0.75rem;
+      color: #484f58;
+      width: 100%;
+      max-width: 900px;
+      text-align: center;
+    }
+
+    #status-bar {
+      width: 100%;
+      max-width: 900px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 0;
+      font-size: 0.75rem;
+      color: #8b949e;
+    }
+
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #238636;
+      color: #fff;
+      padding: 10px 16px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s;
+    }
+
+    #toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1><span class="dot"></span> Browser Linux (Alpine)</h1>
+    <div class="controls">
+      <button onclick="restartVM()">↺ Restart</button>
+      <button class="primary" id="download-btn" onclick="downloadState()" disabled>
+        ⬇ Download Data
+      </button>
+    </div>
+  </header>
+
+  <div id="screen-container">
+    <div id="loading-overlay">
+      <div class="spinner"></div>
+      <div id="loading-status">Loading emulator…</div>
+      <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
+    </div>
+    <!-- v86 renders its canvas here -->
+  </div>
+
+  <div id="status-bar">
+    <span id="status-text">Initializing…</span>
+    <span id="uptime-text"></span>
+  </div>
+
+  <footer>
+    Powered by <a href="https://github.com/copy/v86" style="color:#58a6ff;" target="_blank">v86</a> 
+    · Alpine Linux · Runs entirely in your browser · No server required
+  </footer>
+
+  <div id="toast"></div>
+
+  <!-- v86 library — served from your repo's /v86/ folder after setup -->
+  <script src="v86/libv86.js"></script>
+
+  <script>
+    // ─── Configuration ────────────────────────────────────────────────────────
+    const CONFIG = {
+      memory_size:     128 * 1024 * 1024,   // 128 MB RAM
+      vga_memory_size:   8 * 1024 * 1024,   // 8 MB VGA
+      bios_url:        "bios/seabios.bin",
+      vga_bios_url:    "bios/vgabios.bin",
+      // Alpine Linux ISO — see README for download link
+      cdrom_url:       "images/alpine.iso",
+      // Optional: boot from a persistent disk image instead
+      // hda_url:      "images/alpine-disk.img",
+    };
+
+    // ─── State ────────────────────────────────────────────────────────────────
+    let emulator = null;
+    let startTime = null;
+    let uptimeInterval = null;
+
+    // ─── Boot ─────────────────────────────────────────────────────────────────
+    function initVM() {
+      setStatus("Fetching disk image…");
+
+      emulator = new V86({
+        memory_size:     CONFIG.memory_size,
+        vga_memory_size: CONFIG.vga_memory_size,
+
+        screen_container: document.getElementById("screen-container"),
+
+        bios:     { url: CONFIG.bios_url },
+        vga_bios: { url: CONFIG.vga_bios_url },
+        cdrom:    { url: CONFIG.cdrom_url },
+
+        autostart: true,
+        disable_mouse: false,
+      });
+
+      // Progress while loading disk image
+      emulator.add_listener("download-progress", function(e) {
+        if (e.file_name.endsWith(".iso") || e.file_name.endsWith(".img")) {
+          const pct = e.total ? Math.round((e.loaded / e.total) * 100) : 0;
+          setProgress(pct);
+          setStatus(`Loading disk image… ${pct}%`);
+        }
+      });
+
+      // Hide overlay once the emulator starts running
+      emulator.add_listener("emulator-ready", function() {
+        setStatus("Booting Alpine Linux…");
+        setProgress(100);
+      });
+
+      emulator.add_listener("serial0-output-char", function() {
+        // First output = kernel is running = hide overlay
+        hideOverlay();
+        startUptime();
+        document.getElementById("download-btn").disabled = false;
+      });
+    }
+
+    // ─── Restart ──────────────────────────────────────────────────────────────
+    function restartVM() {
+      if (emulator) { emulator.destroy(); emulator = null; }
+      clearInterval(uptimeInterval);
+      document.getElementById("loading-overlay").classList.remove("hidden");
+      document.getElementById("download-btn").disabled = true;
+      setProgress(0);
+      setStatus("Restarting…");
+      setTimeout(initVM, 300);
+    }
+
+    // ─── Download Data ────────────────────────────────────────────────────────
+    // Saves a full VM state snapshot (.bin). Load it back with:
+    //   emulator = new V86({ initial_state: { url: "your-save.bin" }, ... })
+    function downloadState() {
+      if (!emulator) return;
+      setStatus("Creating snapshot…");
+      emulator.save_state(function(error, state) {
+        if (error) {
+          setStatus("Snapshot failed: " + error);
+          showToast("❌ Snapshot failed", "#b62324");
+          return;
+        }
+        const blob = new Blob([state], { type: "application/octet-stream" });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement("a");
+        a.href     = url;
+        a.download = "linux-snapshot-" + new Date().toISOString().slice(0,19).replace(/:/g,"-") + ".bin";
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        setStatus("Snapshot downloaded ✓");
+        showToast("✓ Snapshot saved!");
+      });
+    }
+
+    // ─── Helpers ──────────────────────────────────────────────────────────────
+    function hideOverlay() {
+      document.getElementById("loading-overlay").classList.add("hidden");
+    }
+
+    function setStatus(msg) {
+      document.getElementById("status-text").textContent = msg;
+      document.getElementById("loading-status").textContent = msg;
+    }
+
+    function setProgress(pct) {
+      document.getElementById("progress-bar").style.width = pct + "%";
+    }
+
+    function startUptime() {
+      startTime = Date.now();
+      uptimeInterval = setInterval(() => {
+        const s = Math.floor((Date.now() - startTime) / 1000);
+        const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+        document.getElementById("uptime-text").textContent =
+          `Uptime: ${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`;
+      }, 1000);
+    }
+
+    function showToast(msg, bg="#238636") {
+      const t = document.getElementById("toast");
+      t.textContent = msg;
+      t.style.background = bg;
+      t.classList.add("show");
+      setTimeout(() => t.classList.remove("show"), 3000);
+    }
+
+    // ─── Start ────────────────────────────────────────────────────────────────
+    window.addEventListener("DOMContentLoaded", initVM);
+  </script>
+</body>
+</html>
